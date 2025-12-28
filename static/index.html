@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>云服务器高级监控面板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+        
+        :root {
+            --bg-dark: #09090b;
+            --card-bg: #18181b;
+            --accent-blue: #3b82f6;
+            --accent-green: #10b981;
+            --accent-purple: #8b5cf6;
+            --accent-orange: #f59e0b;
+        }
+
+        body { 
+            font-family: 'Plus Jakarta Sans', sans-serif; 
+            background-color: var(--bg-dark); 
+            color: #fafafa;
+            overflow-x: hidden;
+        }
+
+        .glass-card {
+            background: var(--card-bg);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 0.75rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .glass-card:hover {
+            border-color: rgba(255, 255, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .sidebar {
+            background: #111114;
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+            transition: transform 0.3s ease;
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                height: 100vh;
+                z-index: 50;
+                transform: translateX(-100%);
+            }
+            .sidebar.active {
+                transform: translateX(0);
+            }
+        }
+
+        .stat-value {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* 滚动条美化 */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
+        .metric-progress {
+            height: 6px;
+            background: #27272a;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body class="flex flex-col md:flex-row min-h-screen">
+    <!-- 移动端顶部导航 -->
+    <div class="md:hidden flex items-center justify-between p-4 bg-zinc-950 border-b border-white/5">
+        <div class="flex items-center gap-2">
+            <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                <i data-lucide="activity" class="text-white w-5 h-5"></i>
+            </div>
+            <span class="font-bold tracking-tight">CloudWatch</span>
+        </div>
+        <button id="menu-toggle" class="p-2 text-zinc-400 hover:text-white">
+            <i data-lucide="menu" class="w-6 h-6"></i>
+        </button>
+    </div>
+
+    <!-- 侧边栏 (系统信息) -->
+    <aside id="sidebar" class="sidebar fixed md:static inset-y-0 left-0 w-72 p-6 flex-shrink-0 z-50 md:z-auto">
+        <div class="hidden md:flex items-center gap-3 mb-10">
+            <div class="p-2 bg-blue-600 rounded-lg">
+                <i data-lucide="activity" class="w-6 h-6 text-white"></i>
+            </div>
+            <h1 class="text-xl font-bold tracking-tight">CloudWatch</h1>
+        </div>
+
+        <nav class="space-y-8">
+            <div>
+                <p class="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-4">系统信息</p>
+                <div class="space-y-4">
+                    <div class="flex flex-col">
+                        <span class="text-xs text-zinc-500">操作系统</span>
+                        <span id="info-os" class="text-sm font-medium">Loading...</span>
+                    </div>
+                    <div class="flex flex-col">
+                        <span class="text-xs text-zinc-500">处理器</span>
+                        <span id="info-cpu" class="text-sm font-medium">Loading...</span>
+                    </div>
+                    <div class="flex flex-col">
+                        <span class="text-xs text-zinc-500">总内存</span>
+                        <span id="info-mem" class="text-sm font-medium">Loading...</span>
+                    </div>
+                    <div class="flex flex-col">
+                        <span class="text-xs text-zinc-500">运行时间</span>
+                        <span id="stat-uptime" class="text-sm font-medium stat-value text-blue-400">Loading...</span>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <p class="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-4">连接状态</p>
+                <div class="flex items-center gap-2">
+                    <div id="status-dot" class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                    <span id="status-text" class="text-sm text-zinc-300 font-medium">实时连接中</span>
+                </div>
+                <p id="last-update" class="text-[10px] text-zinc-600 mt-2">最后同步: --:--:--</p>
+            </div>
+
+            <div>
+                <p class="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-4">高级功能</p>
+                <div class="space-y-4">
+                    <div class="flex flex-col p-3 glass-card bg-zinc-900/50 gap-3">
+                        <div class="flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="text-xs font-medium text-zinc-200">自动内存清理</span>
+                                <span id="threshold-label" class="text-[10px] text-zinc-500">阈值: 65%</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" id="auto-clean-toggle" class="sr-only peer">
+                                <div class="w-9 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            </label>
+                        </div>
+                        
+                        <!-- 阈值调节滑动条 -->
+                        <div id="threshold-container" class="space-y-2 hidden">
+                            <input type="range" id="threshold-slider" min="30" max="95" value="65" 
+                                class="w-full h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500">
+                            <div class="flex justify-between text-[8px] text-zinc-600 font-mono">
+                                <span>30%</span>
+                                <span>95%</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <button onclick="manualClean()" class="w-full py-2 px-4 bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300 rounded-lg transition-colors flex items-center justify-center gap-2">
+                        <i data-lucide="zap" class="w-3 h-3"></i>
+                        立即清理内存
+                    </button>
+                </div>
+            </div>
+        </nav>
+
+        <!-- 移动端关闭按钮 -->
+        <button id="menu-close" class="md:hidden absolute top-4 right-4 p-2 text-zinc-400">
+            <i data-lucide="x" class="w-6 h-6"></i>
+        </button>
+    </aside>
+
+    <!-- 移动端遮罩 -->
+    <div id="sidebar-overlay" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden"></div>
+
+    <!-- 通知系统 -->
+    <div id="toast-container" class="fixed top-6 right-6 z-[100] space-y-3"></div>
+
+    <!-- 主面板 -->
+    <main class="flex-1 p-4 md:p-8 space-y-6 overflow-y-auto">
+        <!-- 顶部核心指标 -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="glass-card p-5 border-t-2 border-emerald-500/50">
+                <div class="flex justify-between items-start mb-2">
+                    <div class="p-2 bg-emerald-500/10 rounded-md">
+                        <i data-lucide="arrow-up-down" class="w-5 h-5 text-emerald-500"></i>
+                    </div>
+                    <span id="network-total-label" class="text-[10px] font-bold text-emerald-500/50 uppercase tracking-widest">当前总带宽: 0 Mbps</span>
+                </div>
+                <div class="flex flex-col gap-1 mt-3">
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs text-zinc-500">下载速率</span>
+                        <span id="down-val" class="text-emerald-400 font-bold stat-value text-base">0 KB/s</span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs text-zinc-500">上传速率</span>
+                        <span id="up-val" class="text-emerald-400 font-bold stat-value text-base">0 KB/s</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="glass-card p-5">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="p-2 bg-blue-500/10 rounded-md">
+                        <i data-lucide="cpu" class="w-5 h-5 text-blue-500"></i>
+                    </div>
+                    <span id="cpu-percent" class="stat-value text-lg font-bold text-blue-400">0%</span>
+                </div>
+                <p class="text-sm text-zinc-400 mb-2">CPU 使用率</p>
+                <div class="metric-progress">
+                    <div id="cpu-bar" class="h-full bg-blue-500 transition-all duration-500" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div class="glass-card p-5">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="p-2 bg-purple-500/10 rounded-md">
+                        <i data-lucide="database" class="w-5 h-5 text-purple-500"></i>
+                    </div>
+                    <span id="mem-percent" class="stat-value text-lg font-bold text-purple-400">0%</span>
+                </div>
+                <p class="text-sm text-zinc-400 mb-2">内存占用</p>
+                <div class="metric-progress">
+                    <div id="mem-bar" class="h-full bg-purple-500 transition-all duration-500" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div class="glass-card p-5">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="p-2 bg-orange-500/10 rounded-md">
+                        <i data-lucide="hard-drive" class="w-5 h-5 text-orange-500"></i>
+                    </div>
+                    <span id="disk-percent" class="stat-value text-lg font-bold text-orange-400">0%</span>
+                </div>
+                <p class="text-sm text-zinc-400 mb-2">磁盘空间</p>
+                <div class="metric-progress">
+                    <div id="disk-bar" class="h-full bg-orange-500 transition-all duration-500" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 图表区 -->
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div class="glass-card p-6">
+                <div class="flex items-center gap-2 mb-6 text-zinc-200 font-semibold">
+                    <i data-lucide="bar-chart-3" class="w-4 h-4"></i>
+                    带宽实时监控
+                </div>
+                <div id="net-chart" class="w-full h-[350px]"></div>
+            </div>
+            <div class="glass-card p-6">
+                <div class="flex items-center gap-2 mb-6 text-zinc-200 font-semibold">
+                    <i data-lucide="line-chart" class="w-4 h-4"></i>
+                    CPU & 内存负载历史 (%)
+                </div>
+                <div id="sys-chart" class="w-full h-[350px]"></div>
+            </div>
+        </div>
+
+        <!-- 进程排行 -->
+        <div class="glass-card p-6">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-2 text-zinc-200 font-semibold">
+                    <i data-lucide="list-ordered" class="w-4 h-4"></i>
+                    高内存占用进程排行 (Top 5)
+                </div>
+                <span class="text-[10px] text-zinc-500 uppercase tracking-widest">实时更新</span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead>
+                        <tr class="text-xs text-zinc-500 border-b border-white/5">
+                            <th class="pb-3 font-medium">PID</th>
+                            <th class="pb-3 font-medium">进程名称</th>
+                            <th class="pb-3 font-medium text-right">内存占用</th>
+                        </tr>
+                    </thead>
+                    <tbody id="process-list" class="text-sm">
+                        <!-- 动态加载 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        lucide.createIcons();
+
+        // 移动端菜单逻辑
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('sidebar-overlay');
+        const menuToggle = document.getElementById('menu-toggle');
+        const menuClose = document.getElementById('menu-close');
+
+        function toggleMenu() {
+            sidebar.classList.toggle('active');
+            overlay.classList.toggle('hidden');
+            document.body.classList.toggle('overflow-hidden');
+        }
+
+        menuToggle.addEventListener('click', toggleMenu);
+        menuClose.addEventListener('click', toggleMenu);
+        overlay.addEventListener('click', toggleMenu);
+
+        let netChart, sysChart;
+        const MAX_POINTS = 30;
+        const history = {
+            time: [],
+            up: [],
+            down: [],
+            cpu: [],
+            mem: []
+        };
+
+        function formatSpeed(bytes) {
+            if (bytes < 1024) return bytes.toFixed(1) + ' B/s';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB/s';
+            if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB/s';
+            return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB/s';
+        }
+
+        function initCharts() {
+            const commonOption = {
+                backgroundColor: 'transparent',
+                tooltip: { 
+                    trigger: 'axis',
+                    backgroundColor: '#18181b',
+                    borderColor: '#27272a',
+                    textStyle: { color: '#fafafa' },
+                    formatter: function(params) {
+                        let res = params[0].name + '<br/>';
+                        params.forEach(item => {
+                            // 检查是否为带宽图表（通过系列名称判断）
+                            const isNetwork = item.seriesName === 'Download' || item.seriesName === 'Upload';
+                            let val = isNetwork ? formatSpeed(item.value) : item.value + '%';
+                            res += item.marker + item.seriesName + ': ' + val + '<br/>';
+                        });
+                        return res;
+                    }
+                },
+                grid: { left: '4%', right: '4%', bottom: '5%', top: '5%', containLabel: true },
+                xAxis: { 
+                    type: 'category', 
+                    data: history.time,
+                    axisLine: { lineStyle: { color: '#27272a' } },
+                    axisLabel: { color: '#71717a' }
+                },
+                yAxis: { 
+                    type: 'value',
+                    splitLine: { lineStyle: { color: '#27272a' } },
+                    axisLabel: { 
+                        color: '#71717a',
+                        formatter: function(value) {
+                            // 这里是 Y 轴的单位，简单处理
+                            if (value === 0) return '0';
+                            if (value < 1024) return value + ' B';
+                            if (value < 1024 * 1024) return (value / 1024).toFixed(0) + ' K';
+                            if (value < 1024 * 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + ' M';
+                            return (value / (1024 * 1024 * 1024)).toFixed(1) + ' G';
+                        }
+                    }
+                }
+            };
+
+            netChart = echarts.init(document.getElementById('net-chart'), 'dark');
+            sysChart = echarts.init(document.getElementById('sys-chart'), 'dark');
+
+            netChart.setOption({
+                ...commonOption,
+                color: ['#3b82f6', '#10b981'],
+                series: [
+                    { name: 'Download', type: 'line', smooth: true, areaStyle: { opacity: 0.05 }, data: history.down },
+                    { name: 'Upload', type: 'line', smooth: true, areaStyle: { opacity: 0.05 }, data: history.up }
+                ]
+            });
+
+            sysChart.setOption({
+                ...commonOption,
+                color: ['#3b82f6', '#8b5cf6'],
+                yAxis: {
+                    ...commonOption.yAxis,
+                    axisLabel: { ...commonOption.yAxis.axisLabel, formatter: '{value}%' }
+                },
+                tooltip: {
+                    ...commonOption.tooltip,
+                    formatter: function(params) {
+                        let res = params[0].name + '<br/>';
+                        params.forEach(item => {
+                            res += item.marker + item.seriesName + ': ' + item.value + '%<br/>';
+                        });
+                        return res;
+                    }
+                },
+                series: [
+                    { name: 'CPU', type: 'line', smooth: true, data: history.cpu },
+                    { name: 'Memory', type: 'line', smooth: true, data: history.mem }
+                ]
+            });
+        }
+
+        async function fetchSystemInfo() {
+            try {
+                const res = await fetch('/api/info');
+                const info = await res.json();
+                document.getElementById('info-os').innerText = info.os;
+                document.getElementById('info-cpu').innerText = `${info.cpu_count} Cores @ ${info.cpu_freq}`;
+                document.getElementById('info-mem').innerText = info.total_memory;
+            } catch (e) { console.error('Info error', e); }
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const bgColor = type === 'success' ? 'bg-emerald-500/20 border-emerald-500/50' : 'bg-blue-500/20 border-blue-500/50';
+            const textColor = type === 'success' ? 'text-emerald-400' : 'text-blue-400';
+            const icon = type === 'success' ? 'check-circle' : 'info';
+            
+            toast.className = `${bgColor} border backdrop-blur-md p-4 rounded-xl flex items-center gap-3 min-w-[240px] animate-in slide-in-from-right-full duration-300`;
+            toast.innerHTML = `
+                <i data-lucide="${icon}" class="w-5 h-5 ${textColor}"></i>
+                <span class="text-sm font-medium ${textColor}">${message}</span>
+            `;
+            container.appendChild(toast);
+            lucide.createIcons();
+            
+            setTimeout(() => {
+                toast.classList.add('animate-out', 'fade-out', 'slide-out-to-right-full');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        const cleanToggle = document.getElementById('auto-clean-toggle');
+
+        // 切换自动清理
+        cleanToggle.addEventListener('change', async (e) => {
+            const enabled = e.target.checked;
+            const threshold = parseInt(document.getElementById('threshold-slider').value);
+            
+            // 显示/隐藏滑动条
+            document.getElementById('threshold-container').classList.toggle('hidden', !enabled);
+            
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ auto_clean_enabled: enabled, threshold: threshold })
+                });
+                const data = await response.json();
+                showToast(enabled ? `自动清理已开启 (阈值: ${data.threshold}%)` : '自动清理已关闭');
+            } catch (err) {
+                console.error('Failed to update settings:', err);
+                cleanToggle.checked = !enabled;
+            }
+        });
+
+        // 调节阈值
+        document.getElementById('threshold-slider').addEventListener('input', (e) => {
+            document.getElementById('threshold-label').innerText = `阈值: ${e.target.value}%`;
+        });
+
+        document.getElementById('threshold-slider').addEventListener('change', async (e) => {
+            const threshold = parseInt(e.target.value);
+            const enabled = cleanToggle.checked;
+            
+            try {
+                await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ auto_clean_enabled: enabled, threshold: threshold })
+                });
+                showToast(`清理阈值已调整为 ${threshold}%`);
+            } catch (err) {
+                console.error('Failed to update threshold:', err);
+            }
+        });
+
+        async function initSettings() {
+            try {
+                const response = await fetch('/api/settings');
+                const data = await response.json();
+                const slider = document.getElementById('threshold-slider');
+                const label = document.getElementById('threshold-label');
+                const container = document.getElementById('threshold-container');
+                
+                cleanToggle.checked = data.auto_clean_enabled;
+                slider.value = data.threshold;
+                label.innerText = `阈值: ${data.threshold}%`;
+                container.classList.toggle('hidden', !data.auto_clean_enabled);
+            } catch (err) {
+                console.error('Failed to init settings:', err);
+            }
+        }
+
+        initSettings();
+
+        async function manualClean() {
+            try {
+                const res = await fetch('/api/clean', { method: 'POST' });
+                const data = await res.json();
+                showToast(`已成功清理 ${data.cleaned_processes} 个进程内存`, 'success');
+            } catch (e) {
+                showToast('清理失败', 'error');
+            }
+        }
+
+        async function updateStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+
+                // 更新数值
+                const cpuPercent = document.getElementById('cpu-percent');
+                cpuPercent.innerText = data.cpu + '%';
+                document.getElementById('cpu-bar').style.width = data.cpu + '%';
+                
+                // CPU 警告变红 (>=70%)
+                if (data.cpu >= 70) {
+                    cpuPercent.classList.remove('text-blue-400');
+                    cpuPercent.classList.add('text-red-500', 'animate-pulse');
+                } else {
+                    cpuPercent.classList.remove('text-red-500', 'animate-pulse');
+                    cpuPercent.classList.add('text-blue-400');
+                }
+
+                const memPercent = document.getElementById('mem-percent');
+                memPercent.innerText = data.memory + '%';
+                document.getElementById('mem-bar').style.width = data.memory + '%';
+                
+                // 内存警告变红 (>=70%)
+                if (data.memory >= 70) {
+                    memPercent.classList.remove('text-purple-400');
+                    memPercent.classList.add('text-red-500', 'animate-pulse');
+                } else {
+                    memPercent.classList.remove('text-red-500', 'animate-pulse');
+                    memPercent.classList.add('text-purple-400');
+                }
+
+                document.getElementById('disk-percent').innerText = data.disk + '%';
+                document.getElementById('disk-bar').style.width = data.disk + '%';
+                document.getElementById('down-val').innerText = formatSpeed(data.download_speed);
+                document.getElementById('up-val').innerText = formatSpeed(data.upload_speed);
+                
+                // 计算 Mbps 总带宽
+                const totalSpeedBytes = data.download_speed + data.upload_speed;
+                const mbps = (totalSpeedBytes * 8) / (1024 * 1024);
+                document.getElementById('network-total-label').innerText = `当前总带宽: ${mbps.toFixed(2)} Mbps`;
+
+                document.getElementById('stat-uptime').innerText = data.uptime;
+
+                // 自动清理触发提示
+                if (data.was_cleaned) {
+                    showToast('检测到内存占用过高，已自动执行清理', 'success');
+                }
+                
+                // 同步后端开关状态 (以防万一)
+                cleanToggle.checked = data.auto_clean;
+
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString('zh-CN', { hour12: false });
+                document.getElementById('last-update').innerText = '最后同步: ' + timeStr;
+
+                // 更新历史数据
+                if (history.time.length >= MAX_POINTS) {
+                    Object.values(history).forEach(arr => arr.shift());
+                }
+                history.time.push(timeStr);
+                // 存储原始字节数据，让 ECharts 的 formatter 处理显示
+                history.down.push(data.download_speed);
+                history.up.push(data.upload_speed);
+                history.cpu.push(data.cpu);
+                history.mem.push(data.memory);
+
+                netChart.setOption({ xAxis: { data: history.time }, series: [{ data: history.down }, { data: history.up }] });
+                sysChart.setOption({ xAxis: { data: history.time }, series: [{ data: history.cpu }, { data: history.mem }] });
+
+                // 更新进程列表
+                const procList = document.getElementById('process-list');
+                procList.innerHTML = data.top_processes.map(p => `
+                    <tr class="border-b border-white/5 last:border-0">
+                        <td class="py-3 text-zinc-500 font-mono text-xs">${p.pid}</td>
+                        <td class="py-3 font-medium text-zinc-300">${p.name}</td>
+                        <td class="py-3 text-right">
+                            <span class="px-2 py-0.5 rounded text-xs ${p.memory_percent > 10 ? 'bg-red-500/10 text-red-400' : 'bg-zinc-800 text-zinc-400'}">
+                                ${p.memory_percent.toFixed(1)}%
+                            </span>
+                        </td>
+                    </tr>
+                `).join('');
+
+                document.getElementById('status-dot').className = "w-2 h-2 rounded-full bg-green-500 animate-pulse";
+                document.getElementById('status-text').innerText = "实时连接中";
+
+            } catch (e) {
+                document.getElementById('status-dot').className = "w-2 h-2 rounded-full bg-red-500";
+                document.getElementById('status-text').innerText = "连接已断开";
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            fetchSystemInfo();
+            setInterval(updateStats, 1000);
+            updateStats();
+            window.addEventListener('resize', () => {
+                netChart.resize();
+                sysChart.resize();
+            });
+        });
+    </script>
+</body>
+</html>
