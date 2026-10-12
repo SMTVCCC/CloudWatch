@@ -74,6 +74,21 @@
             border-radius: 999px;
             overflow: hidden;
         }
+
+        /* Toast 动画 (不依赖 Tailwind 动画插件) */
+        #toast-container > div {
+            transform: translateX(120%);
+            opacity: 0;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+        }
+        #toast-container > .toast-in {
+            transform: translateX(0);
+            opacity: 1;
+        }
+        #toast-container > .toast-out {
+            transform: translateX(120%);
+            opacity: 0;
+        }
     </style>
 </head>
 <body class="flex flex-col md:flex-row min-h-screen">
@@ -139,6 +154,7 @@
                             <div class="flex flex-col">
                                 <span class="text-xs font-medium text-zinc-200">自动内存清理</span>
                                 <span id="threshold-label" class="text-[10px] text-zinc-500">阈值: 65%</span>
+                                <span id="next-clean-label" class="text-[10px] text-zinc-600"></span>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" id="auto-clean-toggle" class="sr-only peer">
@@ -287,6 +303,31 @@
     <script>
         lucide.createIcons();
 
+        // ---- 工具函数 ----
+        function escapeHtml(s) {
+            return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        // 带可选鉴权的 fetch (设置了 CLOUDWATCH_TOKEN 后, 首次 401 会提示输入)
+        async function apiFetch(url, opts = {}) {
+            const token = localStorage.getItem('cw_token');
+            if (token) {
+                opts.headers = Object.assign({ 'Authorization': 'Bearer ' + token }, opts.headers || {});
+            }
+            let res = await fetch(url, opts);
+            if (res.status === 401) {
+                const t = prompt('此面板已启用访问令牌, 请输入:');
+                if (t) {
+                    localStorage.setItem('cw_token', t);
+                    return apiFetch(url, opts);
+                }
+                throw new Error('Unauthorized');
+            }
+            return res;
+        }
+
         // 移动端菜单逻辑
         const sidebar = document.getElementById('sidebar');
         const overlay = document.getElementById('sidebar-overlay');
@@ -401,7 +442,7 @@
 
         async function fetchSystemInfo() {
             try {
-                const res = await fetch('/api/info');
+                const res = await apiFetch('/api/info');
                 const info = await res.json();
                 document.getElementById('info-os').innerText = info.os;
                 document.getElementById('info-cpu').innerText = `${info.cpu_count} Cores @ ${info.cpu_freq}`;
@@ -412,20 +453,22 @@
         function showToast(message, type = 'info') {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
-            const bgColor = type === 'success' ? 'bg-emerald-500/20 border-emerald-500/50' : 'bg-blue-500/20 border-blue-500/50';
-            const textColor = type === 'success' ? 'text-emerald-400' : 'text-blue-400';
-            const icon = type === 'success' ? 'check-circle' : 'info';
-            
-            toast.className = `${bgColor} border backdrop-blur-md p-4 rounded-xl flex items-center gap-3 min-w-[240px] animate-in slide-in-from-right-full duration-300`;
+            const isOk = type === 'success';
+            const bgColor = isOk ? 'bg-emerald-500/20 border-emerald-500/50' : 'bg-blue-500/20 border-blue-500/50';
+            const textColor = isOk ? 'text-emerald-400' : 'text-blue-400';
+            const icon = isOk ? 'check-circle' : 'info';
+
+            toast.className = `${bgColor} border backdrop-blur-md p-4 rounded-xl flex items-center gap-3 min-w-[240px]`;
             toast.innerHTML = `
                 <i data-lucide="${icon}" class="w-5 h-5 ${textColor}"></i>
-                <span class="text-sm font-medium ${textColor}">${message}</span>
+                <span class="text-sm font-medium ${textColor}">${escapeHtml(message)}</span>
             `;
             container.appendChild(toast);
             lucide.createIcons();
-            
+            requestAnimationFrame(() => toast.classList.add('toast-in'));
+
             setTimeout(() => {
-                toast.classList.add('animate-out', 'fade-out', 'slide-out-to-right-full');
+                toast.classList.add('toast-out');
                 setTimeout(() => toast.remove(), 300);
             }, 3000);
         }
@@ -441,7 +484,7 @@
             document.getElementById('threshold-container').classList.toggle('hidden', !enabled);
             
             try {
-                const response = await fetch('/api/settings', {
+                const response = await apiFetch('/api/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ auto_clean_enabled: enabled, threshold: threshold })
@@ -464,7 +507,7 @@
             const enabled = cleanToggle.checked;
             
             try {
-                await fetch('/api/settings', {
+                await apiFetch('/api/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ auto_clean_enabled: enabled, threshold: threshold })
@@ -477,7 +520,7 @@
 
         async function initSettings() {
             try {
-                const response = await fetch('/api/settings');
+                const response = await apiFetch('/api/settings');
                 const data = await response.json();
                 const slider = document.getElementById('threshold-slider');
                 const label = document.getElementById('threshold-label');
@@ -496,7 +539,7 @@
 
         async function manualClean() {
             try {
-                const res = await fetch('/api/clean', { method: 'POST' });
+                const res = await apiFetch('/api/clean', { method: 'POST' });
                 const data = await res.json();
                 showToast(`已成功清理 ${data.cleaned_processes} 个进程内存`, 'success');
             } catch (e) {
@@ -506,7 +549,7 @@
 
         async function updateStats() {
             try {
-                const res = await fetch('/api/stats');
+                const res = await apiFetch('/api/stats');
                 const data = await res.json();
 
                 // 更新数值
@@ -574,19 +617,30 @@
                 netChart.setOption({ xAxis: { data: history.time }, series: [{ data: history.down }, { data: history.up }] });
                 sysChart.setOption({ xAxis: { data: history.time }, series: [{ data: history.cpu }, { data: history.mem }] });
 
-                // 更新进程列表
+                // 更新进程列表 (进程名做 HTML 转义, 防止恶意进程名注入)
                 const procList = document.getElementById('process-list');
                 procList.innerHTML = data.top_processes.map(p => `
                     <tr class="border-b border-white/5 last:border-0">
-                        <td class="py-3 text-zinc-500 font-mono text-xs">${p.pid}</td>
-                        <td class="py-3 font-medium text-zinc-300">${p.name}</td>
+                        <td class="py-3 text-zinc-500 font-mono text-xs">${escapeHtml(p.pid)}</td>
+                        <td class="py-3 font-medium text-zinc-300">${escapeHtml(p.name)}</td>
                         <td class="py-3 text-right">
                             <span class="px-2 py-0.5 rounded text-xs ${p.memory_percent > 10 ? 'bg-red-500/10 text-red-400' : 'bg-zinc-800 text-zinc-400'}">
-                                ${p.memory_percent.toFixed(1)}%
+                                ${Number(p.memory_percent).toFixed(1)}%
                             </span>
                         </td>
                     </tr>
                 `).join('');
+
+                // 下次自动清理倒计时
+                if (data.auto_clean && data.next_clean_in > 0) {
+                    const m = Math.floor(data.next_clean_in / 60);
+                    const s = data.next_clean_in % 60;
+                    document.getElementById('next-clean-label').innerText = `下次自动清理: ${m}m ${s}s`;
+                } else if (data.auto_clean) {
+                    document.getElementById('next-clean-label').innerText = '已就绪, 触发中…';
+                } else {
+                    document.getElementById('next-clean-label').innerText = '';
+                }
 
                 document.getElementById('status-dot').className = "w-2 h-2 rounded-full bg-green-500 animate-pulse";
                 document.getElementById('status-text').innerText = "实时连接中";

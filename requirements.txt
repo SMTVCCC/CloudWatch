@@ -1,0 +1,4 @@
+fastapi>=0.100
+uvicorn>=0.23
+psutil>=5.9
+pydantic>=2.0
